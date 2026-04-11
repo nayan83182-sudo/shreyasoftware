@@ -1,13 +1,25 @@
-# QuantumCart Architecture
+# QuantumCart Enterprise Architecture
 
-QuantumCart is a next-generation decentralized e-commerce platform designed to be a self-sustaining retail grid. It consists of:
-1. An AI-driven inventory prediction system & high-speed Rust backend.
-2. A headless SvelteKit storefront with 3D product rendering.
-3. An automated drop-shipping WordPress/WooCommerce plugin for seamless product import.
+QuantumCart is an enterprise-grade, highly scalable decentralized e-commerce platform designed to be a self-sustaining retail grid.
 
-## 1. Database Schema (PostgreSQL Cluster)
+## 1. Enterprise Architecture Patterns
 
-To handle 10,000 transactions a minute and provide high fault tolerance, we use a highly available PostgreSQL cluster setup.
+### 1.1 High-Availability & Global Scale
+- **PostgreSQL Cluster:** Active-Active multi-region deployment using Citus or CockroachDB concepts for globally distributed consistency.
+- **Redis Enterprise:** Clustered caching layer for sub-100ms latency globally.
+- **CDN Edge Rendering:** SvelteKit frontend distributed globally, rendering 3D models at the edge.
+
+### 1.2 CQRS & Event Sourcing (Transactions)
+- **Command Query Responsibility Segregation (CQRS):** Write operations (orders) are processed via Apache Kafka/Redpanda event streams. Read operations (inventory, products) are served from optimized read-replicas and Redis clusters.
+- **Event Sourcing:** Transactions are immutable events. State (like current inventory) is a materialized view derived from the event log.
+
+### 1.3 Zero-Trust Security & Observability
+- **Security:** Strict mutual TLS (mTLS) between microservices. JWT-based stateless authentication. WAF (Web Application Firewall) at the edge.
+- **Observability:** OpenTelemetry (OTEL) instrumented across Rust, SvelteKit, and PHP plugins. Distributed tracing and structured logging shipped to Elasticsearch/Datadog.
+
+## 2. Database Schema (PostgreSQL Partitioned Cluster)
+
+To handle 10,000+ transactions a minute, the `transactions` table is partitioned by date, and audit trails are implemented.
 
 ### `vendors` Table
 ```sql
@@ -49,93 +61,58 @@ CREATE TABLE inventory (
 CREATE INDEX idx_inventory_product ON inventory(product_id);
 ```
 
-### `transactions` Table
+### `transactions` Table (Partitioned)
 ```sql
 CREATE TABLE transactions (
-    transaction_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    product_id UUID REFERENCES products(product_id),
+    transaction_id UUID DEFAULT gen_random_uuid(),
+    product_id UUID NOT NULL,
     buyer_id UUID,
-    vendor_id UUID REFERENCES vendors(vendor_id),
+    vendor_id UUID NOT NULL,
     quantity INTEGER NOT NULL,
     total_amount DECIMAL(10, 2) NOT NULL,
-    status VARCHAR(50) DEFAULT 'PENDING', -- PENDING, COMPLETED, FAILED
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-);
-CREATE INDEX idx_transactions_vendor ON transactions(vendor_id);
-CREATE INDEX idx_transactions_created_at ON transactions(created_at);
+    status VARCHAR(50) DEFAULT 'PENDING',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (transaction_id, created_at)
+) PARTITION BY RANGE (created_at);
+
+-- Example Partition
+CREATE TABLE transactions_y2023m10 PARTITION OF transactions
+    FOR VALUES FROM ('2023-10-01') TO ('2023-11-01');
 ```
 
-## 2. API Routing Table (Rust Backend)
-
-The Rust high-speed backend provides RESTful APIs for the frontend and plugins.
+## 3. API Routing Table (Rust Backend)
 
 | Method | Endpoint | Description |
 |---|---|---|
 | `GET` | `/api/v1/products` | Retrieve a list of products (paginated, cached) |
 | `GET` | `/api/v1/products/:id` | Get details for a specific product |
 | `GET` | `/api/v1/inventory/:product_id` | Get real-time inventory level (serves from Redis) |
-| `POST` | `/api/v1/checkout` | Process a transaction/checkout |
-| `POST` | `/api/v1/plugin/import` | For WP Plugin to import product details to their store |
+| `POST` | `/api/v1/checkout` | CQRS Command: Enqueue transaction event |
+| `POST` | `/api/v1/plugin/import` | For WP Plugin to import product details |
 | `POST` | `/api/v1/webhooks/vendor` | Receive inventory updates/orders from vendors |
+| `GET` | `/health` | Kubernetes readiness/liveness probe |
 
-## 3. Redis Caching Strategy
+## 4. Redis Caching Strategy
 
-To achieve sub-100ms load times and handle 10,000 transactions a minute:
-
-1. **Inventory Caching:**
+1. **Inventory Caching (Write-Through):**
    - **Key Pattern:** `inventory:{product_id}`
-   - **Value:** Integer (stock level)
-   - **TTL:** 10 seconds (Updates happen every 5 seconds via scraper)
-   - **Strategy:** Read-Through and Write-Through caching. The Rust backend writes to Redis first, which then queues an async update to PostgreSQL.
-
-2. **Product Catalog Caching:**
+   - **TTL:** 10 seconds.
+2. **Product Catalog Caching (Read-Through):**
    - **Key Pattern:** `product:{product_id}`
-   - **Value:** JSON serialized product details.
-   - **TTL:** 1 Hour. Invalidation occurs on product update.
+   - **TTL:** 1 Hour. Invalidation occurs on product update via Event stream.
+3. **Rate Limiting (Token Bucket):**
+   - Key: `rate_limit:{ip}:{endpoint}`. Handled via Redis Lua scripts to ensure atomicity at 10k TPS.
 
-3. **Rate Limiting / Scraping Buffer:**
-   - Use Redis sets or sorted sets to manage scraping queues and respect supplier API rate limits.
-   - Lock keys `scraper_lock:{vendor_id}` to prevent concurrent overlapping scrapes.
+## 5. Webhook Payload Structures
 
-## 4. Webhook Payload Structures
-
-Communication between the Rust Backend, SvelteKit Frontend, and WP Plugin uses event-driven webhooks.
-
-### 4.1. Inventory Update (Rust -> WP Plugin)
-Sent when inventory levels change or AI predicts a stock-out.
-```json
-{
-  "event": "inventory.updated",
-  "product_id": "uuid-string",
-  "new_stock_level": 150,
-  "timestamp": "2023-10-27T10:00:00Z"
-}
-```
-
-### 4.2. Transaction Completed (Frontend -> Rust -> WP Plugin)
-Sent when an order is successfully processed.
+*(JSON Payloads for Event-Driven Communication remain standard as per V1, enhanced with trace IDs)*
 ```json
 {
   "event": "transaction.completed",
   "transaction_id": "uuid-string",
+  "trace_id": "otel-trace-uuid",
   "product_id": "uuid-string",
   "quantity": 2,
-  "total_amount": 59.98,
-  "buyer_info": {
-    "name": "John Doe",
-    "email": "john@example.com"
-  },
   "timestamp": "2023-10-27T10:05:00Z"
-}
-```
-
-### 4.3. Product Import Request (WP Plugin -> Rust)
-Requested by the WP Plugin to import a product to the external vendor.
-```json
-{
-  "action": "product.import",
-  "vendor_api_key": "v_api_12345",
-  "product_id": "uuid-string",
-  "target_store_url": "https://vendor-store.com"
 }
 ```

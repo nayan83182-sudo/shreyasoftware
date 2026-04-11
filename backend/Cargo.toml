@@ -9,3 +9,19 @@ tokio = { version = "1.37.0", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 uuid = { version = "1.8.0", features = ["v4", "serde"] }
+
+# Enterprise Database & Caching
+sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono", "json"] }
+redis = { version = "0.25.3", features = ["tokio-comp"] }
+
+# Observability & Tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Middleware & Resilience
+tower = "0.4"
+tower-http = { version = "0.5", features = ["cors", "trace", "timeout", "fs"] }
+
+# Error Handling
+anyhow = "1.0"
+thiserror = "1.0"
