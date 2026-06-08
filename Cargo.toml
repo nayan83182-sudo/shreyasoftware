@@ -1,0 +1,44 @@
+[package]
+name = "quantum_cart_backend"
+version = "0.3.0-nobel"
+edition = "2021"
+
+[lib]
+name = "quantum_cart"
+path = "src/lib.rs"
+
+[[bin]]
+name = "quantum_cart_server"
+path = "src/main.rs"
+
+[dependencies]
+axum = "0.7.5"
+tokio = { version = "1.37.0", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+uuid = { version = "1.8.0", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+# Enterprise Database & Caching
+sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono", "json"] }
+redis = { version = "0.25.3", features = ["tokio-comp"] }
+
+# Observability & Tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Middleware & Resilience
+tower = "0.4"
+tower-http = { version = "0.5", features = ["cors", "trace", "timeout", "fs", "limit"] }
+
+# Error Handling
+anyhow = "1.0"
+thiserror = "1.0"
+
+# Advanced Security (Nobel-level Zero-Trust)
+jsonwebtoken = "9.3"
+argon2 = "0.5"
+
+# Quantum-Inspired Optimization (Monte Carlo & Probabilistic for Cart/Inventory)
+rand = "0.8"
+nalgebra = "0.33"
